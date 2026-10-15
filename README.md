@@ -18,8 +18,11 @@ and writes a row to a Google Sheet that doubles as the "customer DB".
 3. Hang up (or the agent ends the call). The post-call pipeline runs:
    - poll `GET /api/calls/status` until Ultravox has produced its call `summary`;
    - fetch the transcript (`GET /api/calls/transcripts`);
-   - `POST /api/extract` → OpenAI structured extraction (serial number, issue, resolution,
-     transfer target, hand-off brief, partner matched, …);
+   - the structured fields (serial number, issue, resolution, transfer target, hand-off brief;
+     partner, order, priority reference) come from the agent itself: right before transferring
+     or hanging up it calls a client tool, `recordRetailCase` or `recordPartnerCase`, and the
+     browser receives the values. If the agent did not call it, `POST /api/extract` falls back
+     to OpenAI extraction when a key is set;
    - `POST /api/db/write` → Google Sheet. **Retail** appends a new row with a generated
      `Caller ID` (`CALL-0006`, `CALL-0007`, …). **Partner** updates the matched partner's row.
 4. You land on the **Customer DB** tab with the new / updated row highlighted and expanded
@@ -43,7 +46,7 @@ npm run dev                        # http://localhost:3000
 | `ULTRAVOX_API_KEY` | yes | Server-side only. |
 | `NEXT_PUBLIC_ULTRAVOX_AGENT_RETAIL` | yes | Ultravox agent ID for Mia. |
 | `NEXT_PUBLIC_ULTRAVOX_AGENT_PARTNER` | yes | Ultravox agent ID for Alex. |
-| `OPENAI_API_KEY` | yes | Post-call field extraction (`gpt-4o-mini`, strict JSON schema). Without it the sheet row still gets the Ultravox summary, outcome, time and duration, but the extracted columns stay blank. |
+| `OPENAI_API_KEY` | no | Fallback only: post-call extraction (`gpt-4o-mini`, strict JSON schema) for calls where the agent did not call its case-logging tool. Without it such rows keep the Ultravox summary, outcome, time and duration but the extracted columns stay blank. |
 | `GOOGLE_SHEET_ID` | for write-back | ID from the sheet URL. Share the sheet (**Editor**) with the service-account email. |
 | `GOOGLE_SERVICE_ACCOUNT_B64` | for write-back | Base64 of the service-account JSON key. Alternatives: `GOOGLE_SERVICE_ACCOUNT_JSON` (raw JSON) or a local `./google_service_credentials.json` (gitignored). |
 | `SHEET_TAB_RETAIL` / `SHEET_TAB_PARTNER` | no | Tab names; default `Retail Support` / `Partner Desk`. Tabs are created and seeded automatically if missing. |

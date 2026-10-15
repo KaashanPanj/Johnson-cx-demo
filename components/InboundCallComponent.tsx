@@ -20,6 +20,7 @@ import {
   ArrowLeft,
   Headset,
   Truck,
+  ClipboardCheck,
 } from "lucide-react";
 import SoundWaveAnimation from "./SoundWaveAnimation";
 import { getAgent, type AgentKey } from "@/lib/agents";
@@ -35,6 +36,7 @@ interface UltravoxSessionI {
   addEventListener: (event: string, cb: (data: any) => void) => void;
   joinCall: (url: string) => Promise<void>;
   leaveCall: () => Promise<void>;
+  registerToolImplementation: (name: string, impl: (params: Record<string, any>) => any) => void;
   transcripts?: { text: string; isFinal: boolean; speaker: string; timestamp: number }[];
   status?: string;
 }
@@ -62,6 +64,73 @@ interface CallObject {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// The agent logs the case itself through an Ultravox client tool (one per agent).
+const CASE_TOOL: Record<AgentKey, string> = { retail: "recordRetailCase", partner: "recordPartnerCase" };
+const CASE_FIELD_LABELS: Record<string, string> = {
+  issue: "Issue",
+  resolution: "Resolution",
+  transferred_to: "Transferred to",
+  outcome: "Outcome",
+  handoff_brief: "Hand-off brief",
+  product_serial: "Serial number",
+  caller_phone: "Callback number",
+  partner_name: "Partner",
+  partner_email: "Email",
+  contact_name: "Contact",
+  order_number: "Order",
+  delivery_status_given: "Delivery status",
+  priority_request_ref: "Priority request",
+};
+
+/** Maps the tool's snake_case parameters onto the same shape /api/extract returns. */
+function caseToExtraction(agentKey: AgentKey, c: Record<string, string>): Record<string, string | null> {
+  const v = (k: string) => (c[k] && c[k].trim() ? c[k].trim() : null);
+  if (agentKey === "retail") {
+    return {
+      callerPhone: v("caller_phone"),
+      productSerial: v("product_serial"),
+      issue: v("issue"),
+      resolution: v("resolution"),
+      transferredTo: v("transferred_to") ?? "none",
+      handoffBrief: v("handoff_brief"),
+      callOutcome: v("outcome"),
+    };
+  }
+  return {
+    partnerName: v("partner_name"),
+    partnerEmail: v("partner_email"),
+    contactName: v("contact_name"),
+    orderDiscussed: v("order_number"),
+    deliveryStatusGiven: v("delivery_status_given"),
+    priorityRequestRef: v("priority_request_ref"),
+    callOutcome: v("outcome"),
+  };
+}
+
+/** Safety net for the partner desk: match what the caller said against the known partners. */
+function matchPartnerFromTranscript(transcript: TranscriptMessage[], partners: DbRow[]): DbRow | null {
+  const text = transcript
+    .filter((t) => t.role === "MESSAGE_ROLE_USER")
+    .map((t) => t.text.toLowerCase())
+    .join(" ");
+  if (!text.trim()) return null;
+  for (const p of partners) {
+    const name = (p.Partner || "").toLowerCase();
+    const words = name.split(/\s+/).filter(Boolean);
+    const email = (p.Email || "").toLowerCase();
+    const contact = (p.Contact || "").toLowerCase();
+    if (
+      (name && text.includes(name)) ||
+      (words.length >= 2 && text.includes(words.slice(0, 2).join(" "))) ||
+      (email && text.includes(email)) ||
+      (contact && text.includes(contact))
+    ) {
+      return p;
+    }
+  }
+  return null;
+}
 
 function computeOutcome(
   agentKey: AgentKey,
@@ -91,7 +160,7 @@ function computeOutcome(
 const POST_CALL_STEPS = [
   "Fetching call summary from Ultravox…",
   "Fetching transcript…",
-  "Analysing the call with AI…",
+  "Collecting the case details…",
   "Writing to the Customer DB…",
   "Opening the Customer DB…",
 ];
@@ -144,6 +213,8 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
   const [errorMsg, setErrorMsg] = useState("");
   const [postCallStep, setPostCallStep] = useState(0);
   const [callerId, setCallerId] = useState<string>("");
+  const [loggedCase, setLoggedCase] = useState<Record<string, string> | null>(null);
+  const caseRef = useRef<Record<string, string> | null>(null);
 
   const ultravoxRef = useRef<UltravoxSessionI | null>(null);
   const callIdRef = useRef("");
@@ -198,19 +269,27 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
         (t) => t.role === "MESSAGE_ROLE_USER" && t.text.trim().length > 0
       ).length;
 
-      // Step 2: AI extraction (non-fatal)
+      // Step 2: structured fields. First choice: what the agent logged itself through the
+      // recordCase tool during the call. Fallback: OpenAI extraction (non-fatal; blank without a key).
       setPostCallStep(2);
-      let ai: any = null;
-      try {
-        const r = await fetch("/api/extract", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agent: agentKey, transcriptArray, summary, endReason, customerTurns }),
-        });
-        const d = await r.json();
-        if (d.success && d.data) ai = d.data;
-      } catch {
-        /* AI failed — continue with blanks */
+      let ai: any = caseRef.current ? caseToExtraction(agentKey, caseRef.current) : null;
+      if (!ai) {
+        try {
+          const r = await fetch("/api/extract", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ agent: agentKey, transcriptArray, summary, endReason, customerTurns }),
+          });
+          const d = await r.json();
+          if (d.success && d.data) ai = d.data;
+        } catch {
+          /* AI failed — continue with blanks */
+        }
+      }
+      // Partner safety net: if nobody named the partner, match the transcript against the known list.
+      if (agentKey === "partner" && !ai?.partnerName) {
+        const hit = matchPartnerFromTranscript(transcriptArray, schema.seedRows);
+        if (hit) ai = { ...(ai || {}), partnerName: hit.Partner, partnerEmail: hit.Email };
       }
 
       const outcome = computeOutcome(agentKey, endReason, customerTurns, ai?.callOutcome ?? null);
@@ -250,6 +329,8 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
       } else {
         const patch: DbRow = {
           "Call Summary": summary,
+          "Order Discussed": ai?.orderDiscussed ?? "",
+          "Priority Request": ai?.priorityRequestRef ?? "",
           "Last Call": callTimestamp,
           "Call Outcome": outcome,
           "Call ID": callId,
@@ -356,6 +437,15 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
 
       const session = new UltravoxSession() as any as UltravoxSessionI;
       ultravoxRef.current = session;
+
+      // The agent logs the case itself: receive the fields the moment it calls the tool.
+      session.registerToolImplementation(CASE_TOOL[agentKey], (params) => {
+        const clean: Record<string, string> = {};
+        for (const [k, v] of Object.entries(params || {})) clean[k] = v == null ? "" : String(v);
+        caseRef.current = clean;
+        setLoggedCase(clean);
+        return "Case recorded.";
+      });
 
       session.addEventListener("status", async () => {
         const s = session.status;
@@ -507,6 +597,24 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
                   <dd className="text-foreground/80">{schema.title}</dd>
                 </div>
               </dl>
+
+              {loggedCase && (
+                <div className="rounded-lg border border-cyan/60 bg-navy p-3 text-white">
+                  <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-cyan">
+                    <ClipboardCheck className="h-3.5 w-3.5" /> Case logged by {agent.persona}
+                  </p>
+                  <dl className="space-y-1 text-xs">
+                    {Object.entries(loggedCase)
+                      .filter(([, v]) => v && v !== "none")
+                      .map(([k, v]) => (
+                        <div key={k} className="grid grid-cols-[96px_1fr] gap-2">
+                          <dt className="text-white/60">{CASE_FIELD_LABELS[k] || k}</dt>
+                          <dd className="leading-snug">{v}</dd>
+                        </div>
+                      ))}
+                  </dl>
+                </div>
+              )}
 
               {phase === "in-call" && (
                 <div className="space-y-4">
