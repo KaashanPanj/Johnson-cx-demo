@@ -1,0 +1,247 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  Aistra visual identity (from the Aistra deck style guide):
+    navy 0D0B1F · brand purple 6E5BFF · deep purple 4B3DC9 · light purple 8B7EFF
+    cyan 00D4E0 · light card fills EEECFF / F6F4FF · title 111111 · body 333333
+    muted 666666 · border BFBFBF · risk red D64545 · risk orange E8943A
+  Typography: Helvetica everywhere, Arial as fallback.
+*/
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-soft: var(--brand-soft);
+  --color-navy: var(--navy);
+  --color-cyan: var(--cyan);
+  --color-deep-purple: var(--deep-purple);
+  --color-light-purple: var(--light-purple);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  /* Soft lavender canvas (Aistra light card fill B); white cards sit above it */
+  --background: #f6f4ff;
+  --foreground: #111111;
+  --card: #ffffff;
+  --card-foreground: #111111;
+  --popover: #ffffff;
+  --popover-foreground: #111111;
+  /* Primary action = Aistra brand purple */
+  --primary: #6e5bff;
+  --primary-foreground: #ffffff;
+  --secondary: #eeecff;
+  --secondary-foreground: #4b3dc9;
+  --muted: #eeecff;
+  --muted-foreground: #666666;
+  --accent: #eeecff;
+  --accent-foreground: #4b3dc9;
+  --destructive: #d64545;
+  --border: #ddd9f2;
+  --input: #ddd9f2;
+  --ring: #6e5bff;
+  /* Brand accents used for active / progress state */
+  --brand: #6e5bff;
+  --brand-foreground: #ffffff;
+  --brand-soft: #eeecff;
+  --navy: #0d0b1f;
+  --cyan: #00d4e0;
+  --deep-purple: #4b3dc9;
+  --light-purple: #8b7eff;
+  --chart-1: #6e5bff;
+  --chart-2: #00d4e0;
+  --chart-3: #4b3dc9;
+  --chart-4: #8b7eff;
+  --chart-5: #e8943a;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #111111;
+  --sidebar-primary: #6e5bff;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #eeecff;
+  --sidebar-accent-foreground: #4b3dc9;
+  --sidebar-border: #ddd9f2;
+  --sidebar-ring: #6e5bff;
+}
+
+.dark {
+  --background: #0d0b1f;
+  --foreground: #ffffff;
+  --card: #171433;
+  --card-foreground: #ffffff;
+  --popover: #171433;
+  --popover-foreground: #ffffff;
+  --primary: #8b7eff;
+  --primary-foreground: #0d0b1f;
+  --brand: #8b7eff;
+  --brand-foreground: #0d0b1f;
+  --brand-soft: #2a2456;
+  --secondary: #221e48;
+  --secondary-foreground: #e5dcff;
+  --muted: #221e48;
+  --muted-foreground: #c8b6ff;
+  --accent: #221e48;
+  --accent-foreground: #e5dcff;
+  --destructive: #e06060;
+  --border: rgba(255, 255, 255, 0.12);
+  --input: rgba(255, 255, 255, 0.16);
+  --ring: #8b7eff;
+  --navy: #0d0b1f;
+  --cyan: #00d4e0;
+  --deep-purple: #4b3dc9;
+  --light-purple: #8b7eff;
+  --chart-1: #8b7eff;
+  --chart-2: #00d4e0;
+  --chart-3: #6e5bff;
+  --chart-4: #c8b6ff;
+  --chart-5: #e8943a;
+  --sidebar: #171433;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #8b7eff;
+  --sidebar-primary-foreground: #0d0b1f;
+  --sidebar-accent: #221e48;
+  --sidebar-accent-foreground: #e5dcff;
+  --sidebar-border: rgba(255, 255, 255, 0.12);
+  --sidebar-ring: #8b7eff;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Sound wave animation */
+@keyframes soundWave {
+  0%,
+  100% {
+    transform: scaleY(0.5);
+  }
+  50% {
+    transform: scaleY(1.5);
+  }
+}
+
+.sound-wave {
+  animation: soundWave 0.8s ease-in-out infinite;
+}
+
+.sound-wave:nth-child(1) {
+  animation-delay: 0s;
+}
+.sound-wave:nth-child(2) {
+  animation-delay: 0.1s;
+}
+.sound-wave:nth-child(3) {
+  animation-delay: 0.2s;
+}
+.sound-wave:nth-child(4) {
+  animation-delay: 0.3s;
+}
+.sound-wave:nth-child(5) {
+  animation-delay: 0.4s;
+}
+
+/* Markdown prose styles */
+.prose {
+  @apply text-gray-800 dark:text-gray-200;
+}
+
+.prose h1 {
+  @apply text-2xl font-bold mb-4 text-gray-900 dark:text-gray-100;
+}
+
+.prose h2 {
+  @apply text-xl font-semibold mb-3 mt-6 text-gray-900 dark:text-gray-100;
+}
+
+.prose h3 {
+  @apply text-lg font-semibold mb-2 mt-4 text-gray-900 dark:text-gray-100;
+}
+
+.prose p {
+  @apply mb-4 leading-relaxed;
+}
+
+.prose ul,
+.prose ol {
+  @apply mb-4 ml-6 space-y-2;
+}
+
+.prose li {
+  @apply leading-relaxed;
+}
+
+.prose ul li {
+  @apply list-disc;
+}
+
+.prose ol li {
+  @apply list-decimal;
+}
+
+.prose strong {
+  @apply font-semibold text-gray-900 dark:text-gray-100;
+}
+
+.prose em {
+  @apply italic;
+}
+
+.prose code {
+  @apply bg-gray-200 dark:bg-gray-800 px-1.5 py-0.5 rounded text-sm font-mono;
+}
+
+.prose pre {
+  @apply bg-gray-200 dark:bg-gray-800 p-4 rounded-lg overflow-x-auto mb-4;
+}
+
+.prose blockquote {
+  @apply border-l-4 border-primary pl-4 italic my-4;
+}
+
+.prose a {
+  @apply text-primary hover:underline;
+}
