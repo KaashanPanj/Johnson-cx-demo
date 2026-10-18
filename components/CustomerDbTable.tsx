@@ -27,7 +27,7 @@ interface Props {
 }
 
 const TIME_COLUMNS = new Set(["Call Time", "Last Call"]);
-const LONG_TEXT_COLUMNS = new Set(["Issue", "Resolution"]);
+const LONG_TEXT_COLUMNS = new Set(["Issue", "Resolution", "Intent"]);
 
 export default function CustomerDbTable({ agent, highlightKey }: Props) {
   const schema = getSchema(agent);
@@ -37,6 +37,7 @@ export default function CustomerDbTable({ agent, highlightKey }: Props) {
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState<string | null>(highlightKey ?? null);
   const [resetting, setResetting] = useState(false);
+  const [staleHeaders, setStaleHeaders] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -47,6 +48,8 @@ export default function CustomerDbTable({ agent, highlightKey }: Props) {
       const base: DbRow[] = Array.isArray(d.rows) ? d.rows : schema.seedRows;
       const isConnected = Boolean(d.connected);
       setConnected(isConnected);
+      const hdrs: string[] = Array.isArray(d.headers) ? d.headers : [];
+      setStaleHeaders(isConnected && hdrs.length > 0 && schema.columns.some((c) => !hdrs.includes(c)));
       if (d.success === false && d.error) setError(String(d.error));
       setRows(isConnected ? base : applyOverlay(base, schema.keyColumn, getOverlay(agent)));
     } catch (e) {
@@ -119,6 +122,13 @@ export default function CustomerDbTable({ agent, highlightKey }: Props) {
       {error && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
           {error}
+        </div>
+      )}
+      {staleHeaders && (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          The columns of this tab in the Google Sheet are out of date. Click <strong>Reset demo data</strong> once to
+          rewrite the headers and seed rows (existing test rows are cleared).
         </div>
       )}
 
@@ -220,6 +230,8 @@ function RowGroup({
           let display: React.ReactNode = raw;
           if (TIME_COLUMNS.has(col)) display = formatCallTime(raw);
           if (col === "Transferred To") display = <TransferChip value={raw} />;
+          if (col === "Handled By") display = <HandledByChip value={raw} />;
+          if (col === "Routed To" && raw) display = <span className="font-medium text-foreground">{raw}</span>;
           const isKey = ci === 0;
           return (
             <td
@@ -307,6 +319,22 @@ function TransferChip({ value }: { value: string }) {
   }
   return (
     <span className="inline-flex items-center rounded-full bg-deep-purple/10 px-2 py-0.5 text-xs font-medium text-deep-purple">
+      {v}
+    </span>
+  );
+}
+
+function HandledByChip({ value }: { value: string }) {
+  const v = value.trim();
+  if (!v) return <span className="text-xs text-muted-foreground">—</span>;
+  const ai = v.toLowerCase().includes("ai");
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+        ai ? "bg-cyan/20 text-navy" : "bg-navy text-white"
+      }`}
+    >
+      {ai ? <Sparkles className="h-3 w-3" /> : <Headset className="h-3 w-3" />}
       {v}
     </span>
   );

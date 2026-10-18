@@ -1,35 +1,38 @@
 # Johnson Health Tech × Aistra — Voice AI demo
 
 An inbound-call demo for Johnson Health Tech Australia built on [Ultravox](https://www.ultravox.ai).
-Two virtual agents answer simulated calls in the browser (WebRTC, no telephony); when a call
-ends, the app pulls the Ultravox summary and transcript, extracts the key facts with OpenAI,
-and writes a row to a Google Sheet that doubles as the "customer DB".
+Calls run in the browser (WebRTC, no telephony). The storyline has three steps, each a tab in the
+app, plus the customer record every call writes to a Google Sheet.
 
-| Agent | Persona | Line | What it does |
+| Tab | Step | Who answers | What it shows |
 |---|---|---|---|
-| Retail support | **Mia** | Consumer IVR | Infers intent and either resolves (delivery status, warranty, troubleshooting), transfers immediately (commercial / urgent), or assists first and then transfers with a hand-off brief. |
-| Partner delivery desk | **Alex** | B2B reseller line | Verifies the reseller, finds the order, gives the latest delivery status and raises a priority logistics request. |
+| AI-enabled IVR | **Route** | Mia (IVR agent) | No menu. Mia asks what the call is about, recognises the intent, names the team she is routing to and transfers with the reason attached. Resolves nothing. |
+| AI-enabled customer support | **Resolve** | Mia (IVR agent → support stage) | Same front door, but simple queries are routed to the AI support agent in the **same call** and voice. Complex calls still go to a human team. |
+| Virtual agent (B2B) | **Assist** | Alex | The reseller line: verify the partner, find the order, give the honest delivery status, raise a priority logistics request. |
+| Customer DB | | | One inbound-calls table (tabs 1 and 2) and one partner table (tab 3), live from the Google Sheet. |
 
-## How a demo call flows
+Routing departments: **Sales, Home Customer Support, Commercial Service, Spare Parts and Service**.
 
-1. **Virtual Agents** tab → pick Mia or Alex → *Simulate inbound call*.
-2. `/call?agent=retail|partner` creates an Ultravox call (`POST /api/calls`) and joins it with
-   `ultravox-client`. You speak as the caller; the live transcript streams on the right.
-3. Hang up (or the agent ends the call). The post-call pipeline runs:
-   - poll `GET /api/calls/status` until Ultravox has produced its call `summary`;
-   - fetch the transcript (`GET /api/calls/transcripts`);
-   - the structured fields (serial number, issue, resolution, transfer target, hand-off brief;
-     partner, order, priority reference) come from the agent itself: right before transferring
-     or hanging up it calls a client tool, `recordRetailCase` or `recordPartnerCase`, and the
-     browser receives the values. If the agent did not call it, `POST /api/extract` falls back
-     to OpenAI extraction when a key is set;
-   - `POST /api/db/write` → Google Sheet. **Retail** appends a new row with a generated
-     `Caller ID` (`CALL-0006`, `CALL-0007`, …). **Partner** updates the matched partner's row.
-4. You land on the **Customer DB** tab with the new / updated row highlighted and expanded
-   (call summary, hand-off brief, outcome, duration, call ID).
+## How a call flows
 
-If the Google Sheet is not configured (or a write fails) the app runs in *demo mode*: it shows
-the seed rows and keeps your call results in the browser session instead.
+1. Pick a tab → *Simulate inbound call*. `/call?mode=ivr|support|partner` creates an Ultravox
+   agent call (`POST /api/calls`) and joins it with `ultravox-client`. You speak as the caller.
+2. **IVR (tabs 1 and 2):** Mia calls the client tool `routeCall` with the intent, the department,
+   who should handle it and a one-sentence summary. The browser answers the tool:
+   - tab 1, or anything complex: *handled by a human team* → Mia says the routing line and hangs up
+     (the transfer is simulated by the hang-up);
+   - tab 2 and a simple query: the browser returns a **new call stage** carrying the live prompt and
+     tools of the AI support agent (fetched from Ultravox when the call was created), so Mia
+     continues as the support agent without a new call.
+3. The support agent (and Alex) log the case themselves before hanging up, through the client tools
+   `recordRetailCase` / `recordPartnerCase`. OpenAI extraction is only a fallback.
+4. After hang-up the app fetches the Ultravox summary and transcript, builds the row and writes it:
+   **inbound calls** append a row keyed by a generated `Caller ID` with `Intent`, `Routed To`,
+   `Handled By` (Human team / AI agent) and the case fields; **partner** calls update the matched
+   partner's row. You land on the Customer DB with the row highlighted.
+
+If the Google Sheet is not configured (or a write fails) the app runs in *demo mode*: seed rows
+plus browser-session results.
 
 ## Setup
 
@@ -43,47 +46,46 @@ npm run dev                        # http://localhost:3000
 
 | Variable | Required | Notes |
 |---|---|---|
-| `ULTRAVOX_API_KEY` | yes | Server-side only. |
-| `NEXT_PUBLIC_ULTRAVOX_AGENT_RETAIL` | yes | Ultravox agent ID for Mia. |
-| `NEXT_PUBLIC_ULTRAVOX_AGENT_PARTNER` | yes | Ultravox agent ID for Alex. |
-| `OPENAI_API_KEY` | no | Fallback only: post-call extraction (`gpt-4o-mini`, strict JSON schema) for calls where the agent did not call its case-logging tool. Without it such rows keep the Ultravox summary, outcome, time and duration but the extracted columns stay blank. |
-| `GOOGLE_SHEET_ID` | for write-back | ID from the sheet URL. Share the sheet (**Editor**) with the service-account email. |
-| `GOOGLE_SERVICE_ACCOUNT_B64` | for write-back | Base64 of the service-account JSON key. Alternatives: `GOOGLE_SERVICE_ACCOUNT_JSON` (raw JSON) or a local `./google_service_credentials.json` (gitignored). |
-| `SHEET_TAB_RETAIL` / `SHEET_TAB_PARTNER` | no | Tab names; default `Retail Support` / `Partner Desk`. Tabs are created and seeded automatically if missing. |
-| `NEXT_PUBLIC_DEMO_TIMEZONE` | no | Default `Australia/Melbourne`. Used for the injected `current_datetime` and table timestamps. |
+| `ULTRAVOX_API_KEY` | yes | Server-side only. Also used to fetch the support agent's prompt for the tab 2 stage switch. |
+| `NEXT_PUBLIC_ULTRAVOX_AGENT_IVR` | yes | Ultravox agent `johnson-ivr` (Mia as the IVR). Tools: hangUp, routeCall. |
+| `NEXT_PUBLIC_ULTRAVOX_AGENT_RETAIL` | yes | Ultravox agent `johnson-retail` (Mia as the AI support agent). Its live prompt and tools become stage 2 of a tab 2 call. |
+| `NEXT_PUBLIC_ULTRAVOX_AGENT_PARTNER` | yes | Ultravox agent `Johnson_b2b` (Alex). |
+| `OPENAI_API_KEY` | no | Fallback extraction only, for calls where the agent did not log the case. |
+| `GOOGLE_SHEET_ID` | for write-back | Share the sheet (**Editor**) with the service-account email. |
+| `GOOGLE_SERVICE_ACCOUNT_B64` | for write-back | Base64 of the service-account JSON key. Alternatives: `GOOGLE_SERVICE_ACCOUNT_JSON` or a local `./google_service_credentials.json` (gitignored). |
+| `SHEET_TAB_RETAIL` / `SHEET_TAB_PARTNER` | no | Tab names; default `Retail Support` / `Partner Desk`. Created and seeded automatically if missing. |
+| `NEXT_PUBLIC_DEMO_TIMEZONE` | no | Default `Australia/Melbourne`. |
+
+`NEXT_PUBLIC_*` values are inlined at build time: on Vercel, set them before the build and redeploy
+after changing them.
 
 ### Google Sheet
 
-Create a blank Google Sheet and share it with the service account as Editor. On first load
-the app creates both tabs, writes the headers and the five seed rows per tab. *Reset demo data*
-in the UI rewrites the seeds (`POST /api/db/seed`).
-
-Column layout is defined in `lib/schema.ts` and is the single source of truth for the sheet
-headers, the table columns and the expanded-row details.
+Column layout lives in `lib/schema.ts` and is the single source of truth for sheet headers, table
+columns and the expanded-row details. When the schema changes, the Customer DB tab shows a banner;
+*Reset demo data* rewrites that tab's headers and seed rows (`POST /api/db/seed`).
 
 ### Ultravox agents
 
-Both agents are created in the Ultravox console (prompts live in
-`../agents/02_agent1_retail_ivr_prompt.md` and `../agents/04_agent2_reseller_prompt.md`).
-Every call made from this app passes `templateContext.current_datetime` (e.g.
-`Thursday, 15 October 2026 | 2026-10-15 | 14:12 | Australia/Melbourne`), so a prompt may use
-`{{current_datetime}}` **when driven by the app** — the console's own test call rejects it.
-Call metadata carries `agentKey` and, for retail, the assigned `callerId`.
+All three agents live in the Ultravox console; the prompts are mirrored in `../agents/`
+(`07_agent0_ivr_prompt.md`, `02_agent1_retail_ivr_prompt.md`, `04_agent2_reseller_prompt.md`).
+Client tools used by the browser: `routeCall`, `recordRetailCase`, `recordPartnerCase`.
+Every call passes `templateContext.current_datetime` and `metadata.mode` (+ `callerId`).
 
 ## Project structure
 
 ```
 app/
-  page.tsx                 Home: Virtual Agents | Customer DB tabs (?tab=agents|db&agent=&highlight=)
-  call/page.tsx            Live call screen (?agent=retail|partner)
-  api/calls/               POST create call · status · transcripts (Ultravox)
-  api/extract/             POST OpenAI structured extraction (per-agent schema)
+  page.tsx                 Home: AI-enabled IVR | AI-enabled customer support | Virtual agent (B2B) | Customer DB
+  call/page.tsx            Live call screen (?mode=ivr|support|partner)
+  api/calls/               POST create call (+ support stage for mode=support) · status · transcripts
+  api/extract/             POST OpenAI structured extraction (fallback)
   api/db/rows|write|seed   Google Sheet read / write / reseed
 components/
-  HomeClient, AgentCards, CustomerDbTable, InboundCallComponent, Header, Footer
+  HomeClient, AgentCards (DemoCard), CustomerDbTable, InboundCallComponent, Header, Footer
 lib/
-  agents.ts     the two agents (IDs from env)
-  schema.ts     per-agent DB schema + seed rows
+  agents.ts     demo modes + agent IDs (from env)
+  schema.ts     per-table DB schema + seed rows
   sheets.ts     Google Sheets I/O (googleapis, service account)
   google.ts     service-account loading
   datetime.ts   demo-timezone helpers
@@ -92,12 +94,10 @@ lib/
 
 ## Deploy (Vercel)
 
-Import the repo as a new Vercel project and set the environment variables above
-(use `GOOGLE_SERVICE_ACCOUNT_B64` for the key). No persistent disk is used — all state lives in
-the Google Sheet.
+Import the repo as a Vercel project and set the environment variables above. No persistent disk is
+used; all state lives in the Google Sheet.
 
 ## Before a real demo
 
 - Shift the hardcoded dates in the agent prompts, the reseller script and `05_partner_orders_db.xlsx`
-  (they are written against 14–16 Oct 2026).
-- Seed-row timestamps in `lib/schema.ts` are dated 13–14 Oct 2026 for the same reason.
+  (written against 14–16 Oct 2026). Seed rows in `lib/schema.ts` are dated 13–14 Oct 2026.

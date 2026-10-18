@@ -4,26 +4,22 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   PhoneOff,
   PhoneIncoming,
+  PhoneForwarded,
   Loader2,
   CheckCircle,
   AlertCircle,
   ArrowLeft,
   Headset,
   Truck,
+  Bot,
   ClipboardCheck,
 } from "lucide-react";
 import SoundWaveAnimation from "./SoundWaveAnimation";
-import { getAgent, type AgentKey } from "@/lib/agents";
+import { getDemo, type DemoMode, type AgentKey } from "@/lib/agents";
 import { getSchema, type DbRow } from "@/lib/schema";
 import { formatDuration } from "@/lib/datetime";
 import { getOverlay, overlayAppend, overlayPatch } from "@/lib/local-overlay";
@@ -61,11 +57,25 @@ interface CallObject {
   summary?: string;
 }
 
+/** The AI support agent's live prompt + tools, fetched server-side for tab 2. */
+interface SupportStage {
+  systemPrompt: string;
+  selectedTools: unknown[];
+}
+
+/** What the IVR decided when it called routeCall. */
+interface RouteInfo {
+  intent: string;
+  department: string;
+  handledBy: "Human team" | "AI agent";
+  callerSummary: string;
+  urgency: string;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-// The agent logs the case itself through an Ultravox client tool (one per agent).
 const CASE_TOOL: Record<AgentKey, string> = { retail: "recordRetailCase", partner: "recordPartnerCase" };
 const CASE_FIELD_LABELS: Record<string, string> = {
   issue: "Issue",
@@ -83,10 +93,16 @@ const CASE_FIELD_LABELS: Record<string, string> = {
   priority_request_ref: "Priority request",
 };
 
+function cleanParams(params: Record<string, any> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(params || {})) out[k] = v == null ? "" : String(v);
+  return out;
+}
+
 /** Maps the tool's snake_case parameters onto the same shape /api/extract returns. */
-function caseToExtraction(agentKey: AgentKey, c: Record<string, string>): Record<string, string | null> {
+function caseToExtraction(db: AgentKey, c: Record<string, string>): Record<string, string | null> {
   const v = (k: string) => (c[k] && c[k].trim() ? c[k].trim() : null);
-  if (agentKey === "retail") {
+  if (db === "retail") {
     return {
       callerPhone: v("caller_phone"),
       productSerial: v("product_serial"),
@@ -132,12 +148,7 @@ function matchPartnerFromTranscript(transcript: TranscriptMessage[], partners: D
   return null;
 }
 
-function computeOutcome(
-  agentKey: AgentKey,
-  endReason: string,
-  customerTurns: number,
-  aiOutcome: string | null | undefined
-): string {
+function computeOutcome(db: AgentKey, endReason: string, customerTurns: number, aiOutcome: string | null | undefined): string {
   switch (endReason) {
     case "unjoined":
       return "Not connected";
@@ -146,7 +157,7 @@ function computeOutcome(
       return aiOutcome ?? "Caller hung up early";
     case "agent_hangup":
       if (customerTurns === 0) return "No engagement";
-      return aiOutcome ?? (agentKey === "retail" ? "Resolved by assistant" : "Status given");
+      return aiOutcome ?? (db === "retail" ? "Resolved by assistant" : "Status given");
     case "timeout":
       return customerTurns === 0 ? "No answer / silence" : "Conversation stalled";
     case "connection_error":
@@ -155,6 +166,26 @@ function computeOutcome(
     default:
       return aiOutcome ?? "Unknown";
   }
+}
+
+/** The line the IVR says when it hands a call to a human team (returned to the agent as the tool result). */
+function humanRouteLine(info: RouteInfo): string {
+  const opener =
+    info.urgency === "urgent"
+      ? `Thanks, I'll get you straight to our ${info.department} team.`
+      : `Thanks, that's one for our ${info.department} team.`;
+  return `${opener} I'm connecting you now, and I'll pass on what you've told me so you won't have to repeat it.`;
+}
+
+/** Turns the live support-agent prompt into the second stage of the same call. */
+function buildSupportPrompt(base: string, info: RouteInfo): string {
+  // Drop the "Starting the call." paragraph: the caller has already been greeted by the IVR step.
+  const withoutGreeting = base.replace(/\n\s*Starting the call\.[\s\S]*?(?=\n\s*\n)/, "\n");
+  const context =
+    `Context for this call: you already answered this call as the receptionist, greeted the caller and asked why they were calling. ` +
+    `They said they are calling about: ${info.intent || "a support question"}. ${info.callerSummary} ` +
+    `Do not greet them again or introduce yourself again. Pick up from here and help them.`;
+  return `${context}\n\n${withoutGreeting.trim()}`;
 }
 
 const POST_CALL_STEPS = [
@@ -185,11 +216,7 @@ function PostCallProgress({ step }: { step: number }) {
             </div>
             <span
               className={`text-xs ${
-                i < step
-                  ? "text-green-600"
-                  : i === step
-                  ? "font-medium text-foreground"
-                  : "text-muted-foreground"
+                i < step ? "text-green-600" : i === step ? "font-medium text-foreground" : "text-muted-foreground"
               }`}
             >
               {label}
@@ -203,10 +230,11 @@ function PostCallProgress({ step }: { step: number }) {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey }) {
+export default function InboundCallComponent({ mode }: { mode: DemoMode }) {
   const router = useRouter();
-  const agent = getAgent(agentKey);
-  const schema = getSchema(agentKey);
+  const demo = getDemo(mode);
+  const dbKey: AgentKey = demo.db;
+  const schema = getSchema(dbKey);
 
   const [phase, setPhase] = useState<Phase>("connecting");
   const [liveTranscripts, setLiveTranscripts] = useState<LiveTranscript[]>([]);
@@ -214,11 +242,15 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
   const [postCallStep, setPostCallStep] = useState(0);
   const [callerId, setCallerId] = useState<string>("");
   const [loggedCase, setLoggedCase] = useState<Record<string, string> | null>(null);
-  const caseRef = useRef<Record<string, string> | null>(null);
+  const [route, setRoute] = useState<RouteInfo | null>(null);
+  const [stageSwitched, setStageSwitched] = useState(false);
 
   const ultravoxRef = useRef<UltravoxSessionI | null>(null);
   const callIdRef = useRef("");
   const callerIdRef = useRef("");
+  const caseRef = useRef<Record<string, string> | null>(null);
+  const routeRef = useRef<RouteInfo | null>(null);
+  const supportStageRef = useRef<SupportStage | null>(null);
   const callEndGuard = useRef(false);
   const initStartedRef = useRef(false);
   const mountedRef = useRef(true);
@@ -270,45 +302,54 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
       ).length;
 
       // Step 2: structured fields. First choice: what the agent logged itself through the
-      // recordCase tool during the call. Fallback: OpenAI extraction (non-fatal; blank without a key).
+      // recordCase tool. For IVR calls routed to a human team the route itself is the record.
+      // Fallback: OpenAI extraction (non-fatal; blank without a key).
       setPostCallStep(2);
-      let ai: any = caseRef.current ? caseToExtraction(agentKey, caseRef.current) : null;
-      if (!ai) {
+      const r = routeRef.current;
+      const humanRouted = r?.handledBy === "Human team";
+      let ai: any = caseRef.current ? caseToExtraction(dbKey, caseRef.current) : null;
+      if (!ai && !humanRouted) {
         try {
-          const r = await fetch("/api/extract", {
+          const res = await fetch("/api/extract", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ agent: agentKey, transcriptArray, summary, endReason, customerTurns }),
+            body: JSON.stringify({ agent: dbKey, transcriptArray, summary, endReason, customerTurns }),
           });
-          const d = await r.json();
+          const d = await res.json();
           if (d.success && d.data) ai = d.data;
         } catch {
           /* AI failed — continue with blanks */
         }
       }
-      // Partner safety net: if nobody named the partner, match the transcript against the known list.
-      if (agentKey === "partner" && !ai?.partnerName) {
+      if (dbKey === "partner" && !ai?.partnerName) {
         const hit = matchPartnerFromTranscript(transcriptArray, schema.seedRows);
         if (hit) ai = { ...(ai || {}), partnerName: hit.Partner, partnerEmail: hit.Email };
       }
 
-      const outcome = computeOutcome(agentKey, endReason, customerTurns, ai?.callOutcome ?? null);
+      const outcome =
+        humanRouted && customerTurns > 0 && !["connection_error", "system_error"].includes(endReason)
+          ? "Routed to human team"
+          : computeOutcome(dbKey, endReason, customerTurns, ai?.callOutcome ?? null);
 
       // Step 3: write to the customer DB
       setPostCallStep(3);
       let highlightKey = "";
 
-      if (agentKey === "retail") {
+      if (dbKey === "retail") {
+        const transferred =
+          ai?.transferredTo && ai.transferredTo !== "none" ? ai.transferredTo : humanRouted ? r!.department : "none";
         const row: DbRow = {
           "Caller ID": callerIdRef.current,
+          Intent: r?.intent ?? "",
+          "Routed To": r ? (r.handledBy === "AI agent" ? "AI support agent" : r.department) : "",
+          "Handled By": r ? r.handledBy : "",
+          Issue: ai?.issue ?? r?.callerSummary ?? (customerTurns === 0 ? "No issue stated — caller didn't speak" : ""),
+          Resolution: ai?.resolution ?? (humanRouted ? `Routed to the ${r!.department} team with the reason attached` : ""),
+          "Call Summary": summary,
+          "Hand-off Brief": ai?.handoffBrief ?? (humanRouted ? r!.callerSummary : ""),
+          "Transferred To": transferred,
           Number: ai?.callerPhone ?? "",
           "Product Serial Number": ai?.productSerial ?? "",
-          Issue:
-            ai?.issue ?? (customerTurns === 0 ? "No issue stated — caller didn't speak" : ""),
-          Resolution: ai?.resolution ?? "",
-          "Call Summary": summary,
-          "Transferred To": ai?.transferredTo ?? "none",
-          "Hand-off Brief": ai?.handoffBrief ?? "",
           "Call Outcome": outcome,
           "Call Time": callTimestamp,
           Duration: formatDuration(durationSec),
@@ -316,12 +357,12 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
         };
         highlightKey = row["Caller ID"];
         try {
-          const r = await fetch("/api/db/write", {
+          const res = await fetch("/api/db/write", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ agent: "retail", row }),
           });
-          const d = await r.json();
+          const d = await res.json();
           if (!d.success) overlayAppend("retail", row);
         } catch {
           overlayAppend("retail", row);
@@ -338,12 +379,12 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
         const match = { partnerName: ai?.partnerName ?? null, partnerEmail: ai?.partnerEmail ?? null };
         let written: DbRow | null = null;
         try {
-          const r = await fetch("/api/db/write", {
+          const res = await fetch("/api/db/write", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ agent: "partner", patch, match }),
           });
-          const d = await r.json();
+          const d = await res.json();
           if (d.success && d.row) written = d.row as DbRow;
         } catch {
           /* fall through to local overlay */
@@ -351,13 +392,12 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
         if (written) {
           highlightKey = written.Partner || "";
         } else {
-          // Sheet unavailable: patch the matching seed row in the session overlay.
           const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
           const name = norm(match.partnerName || "");
           const email = (match.partnerEmail || "").trim().toLowerCase();
-          const seed = schema.seedRows.find((r) => {
-            const rn = norm(r.Partner || "");
-            const re = (r.Email || "").trim().toLowerCase();
+          const seed = schema.seedRows.find((row) => {
+            const rn = norm(row.Partner || "");
+            const re = (row.Email || "").trim().toLowerCase();
             return (email && re === email) || (name && rn && (rn === name || rn.includes(name) || name.includes(rn)));
           });
           if (seed) {
@@ -377,9 +417,9 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
       // Step 4: land on the Customer DB with the row highlighted
       setPostCallStep(4);
       await delay(400);
-      router.push(`/?tab=db&agent=${agentKey}&highlight=${encodeURIComponent(highlightKey)}`);
+      router.push(`/?tab=db&agent=${dbKey}&highlight=${encodeURIComponent(highlightKey)}`);
     },
-    [agentKey, router, schema]
+    [dbKey, router, schema]
   );
 
   // ── Call initiation ───────────────────────────────────────────────────────
@@ -387,18 +427,16 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
     callEndGuard.current = false;
     setPhase("connecting");
 
-    if (!agent.value) {
-      setErrorMsg(
-        `No Ultravox agent ID configured for ${agent.persona}. Set NEXT_PUBLIC_ULTRAVOX_AGENT_${agentKey.toUpperCase()}.`
-      );
+    if (!demo.agentId) {
+      setErrorMsg(`No Ultravox agent ID configured for this demo. Set ${demo.agentEnv}.`);
       setPhase("error");
       return;
     }
 
     try {
-      // Retail: assign the next Caller ID (sheet count, bumped past any session-only rows).
+      // Inbound calls table: assign the next Caller ID (sheet count, bumped past any session-only rows).
       let nextCallerId = "";
-      if (agentKey === "retail") {
+      if (dbKey === "retail") {
         try {
           const r = await fetch("/api/db/rows?agent=retail", { cache: "no-store" });
           const d = await r.json();
@@ -420,10 +458,7 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
       const res = await fetch("/api/calls", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          agent: agent.value,
-          metadata: { agentKey, ...(nextCallerId ? { callerId: nextCallerId } : {}) },
-        }),
+        body: JSON.stringify({ mode, metadata: nextCallerId ? { callerId: nextCallerId } : {} }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -431,6 +466,8 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
       }
       const callData = await res.json();
       callIdRef.current = callData.callId;
+      supportStageRef.current =
+        callData.supportStage && callData.supportStage.systemPrompt ? (callData.supportStage as SupportStage) : null;
 
       const { UltravoxSession } = await import("ultravox-client");
       if (!mountedRef.current) return;
@@ -438,10 +475,48 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
       const session = new UltravoxSession() as any as UltravoxSessionI;
       ultravoxRef.current = session;
 
+      // ── Tools the agent can call in the browser ──
+      if (dbKey === "retail") {
+        // The IVR's routing decision. In tab 1 every call goes to a human team; in tab 2 simple
+        // queries switch the same call into the AI support stage (same voice, new instructions).
+        session.registerToolImplementation("routeCall", (params) => {
+          const p = cleanParams(params);
+          const department = p.department || "Home Customer Support";
+          const stage = supportStageRef.current;
+          const toAi = mode === "support" && p.handled_by === "ai agent" && !!stage;
+          const info: RouteInfo = {
+            intent: p.intent || "",
+            department,
+            handledBy: toAi ? "AI agent" : "Human team",
+            callerSummary: p.caller_summary || "",
+            urgency: p.urgency || "normal",
+          };
+          routeRef.current = info;
+          setRoute(info);
+          if (toAi && stage) {
+            setStageSwitched(true);
+            const body = {
+              systemPrompt: buildSupportPrompt(stage.systemPrompt, info),
+              selectedTools: stage.selectedTools,
+              toolResultText:
+                `(New stage) You are now Mia, the AI support assistant, continuing the same call. ` +
+                `The caller is calling about: ${info.intent}. ${info.callerSummary} ` +
+                `Tell the caller this is something you can help with right now, then help them. ` +
+                `Do not greet them or introduce yourself again.`,
+            };
+            return { result: JSON.stringify(body), responseType: "new-stage" };
+          }
+          return {
+            result:
+              `Route confirmed: ${department}, handled by a person. Say to the caller: "${humanRouteLine(info)}" ` +
+              `Then end the call with the hangUp tool.`,
+            responseType: "tool-response",
+          };
+        });
+      }
       // The agent logs the case itself: receive the fields the moment it calls the tool.
-      session.registerToolImplementation(CASE_TOOL[agentKey], (params) => {
-        const clean: Record<string, string> = {};
-        for (const [k, v] of Object.entries(params || {})) clean[k] = v == null ? "" : String(v);
+      session.registerToolImplementation(CASE_TOOL[dbKey], (params) => {
+        const clean = cleanParams(params);
         caseRef.current = clean;
         setLoggedCase(clean);
         return "Case recorded.";
@@ -490,7 +565,7 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
       setErrorMsg(err?.message || "Failed to start call");
       setPhase("error");
     }
-  }, [agent, agentKey, runPostCallWorkflow]);
+  }, [demo, dbKey, mode, runPostCallWorkflow]);
 
   // Auto-start on mount (guarded against StrictMode double-invocation)
   useEffect(() => {
@@ -521,22 +596,22 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
-  const Icon = agentKey === "retail" ? Headset : Truck;
+  const Icon = mode === "partner" ? Truck : mode === "ivr" ? PhoneForwarded : Headset;
+  const lineLabel =
+    mode === "partner" ? "Reseller partner line (inbound)" : mode === "ivr" ? "Customer line · AI-enabled IVR" : "Customer line · AI-enabled IVR + AI support";
 
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => router.push("/")}>
-          <ArrowLeft className="h-4 w-4" /> Agents
+        <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => router.push(`/?tab=${mode}`)}>
+          <ArrowLeft className="h-4 w-4" /> Back
         </Button>
-        <h1 className="text-xl font-semibold text-navy">
-          Inbound call · {agent.label}
-        </h1>
+        <h1 className="text-xl font-semibold text-navy">Inbound call · {demo.title}</h1>
       </div>
 
       <div className="flex w-full flex-col gap-6 lg:flex-row">
         {/* Left: agent + controls */}
-        <div className="w-full lg:w-[32%]">
+        <div className="w-full lg:w-[34%]">
           <Card>
             <CardHeader>
               <div className="flex items-center gap-3">
@@ -544,8 +619,8 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
                   <Icon className="h-5 w-5" />
                 </span>
                 <div>
-                  <CardTitle className="text-base">{agent.persona}</CardTitle>
-                  <CardDescription>{agent.tagline}</CardDescription>
+                  <CardTitle className="text-base">{demo.persona}</CardTitle>
+                  <CardDescription>{demo.tagline}</CardDescription>
                 </div>
               </div>
             </CardHeader>
@@ -574,34 +649,52 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
               </div>
 
               <dl className="space-y-2 text-sm">
-                {agentKey === "retail" && (
+                {dbKey === "retail" && (
                   <div>
-                    <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                      Caller ID
-                    </dt>
+                    <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Caller ID</dt>
                     <dd className="font-mono text-foreground">{callerId || (phase === "error" ? "—" : "assigning…")}</dd>
                   </div>
                 )}
                 <div>
-                  <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Line
-                  </dt>
-                  <dd className="text-foreground/80">
-                    {agentKey === "retail" ? "Consumer support (inbound)" : "Reseller partner desk (inbound)"}
-                  </dd>
+                  <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Line</dt>
+                  <dd className="text-foreground/80">{lineLabel}</dd>
                 </div>
                 <div>
-                  <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    Writes to
-                  </dt>
+                  <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Writes to</dt>
                   <dd className="text-foreground/80">{schema.title}</dd>
                 </div>
               </dl>
 
+              {route && (
+                <div className="rounded-lg border border-cyan/60 bg-navy p-3 text-white">
+                  <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-cyan">
+                    <PhoneForwarded className="h-3.5 w-3.5" /> Intent recognised
+                  </p>
+                  <p className="text-sm font-medium leading-snug">{route.intent || "—"}</p>
+                  <div className="mt-3 flex items-start gap-2 text-xs">
+                    {route.handledBy === "AI agent" ? (
+                      <Bot className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan" />
+                    ) : (
+                      <Headset className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan" />
+                    )}
+                    <span>
+                      <span className="text-white/60">Routed to </span>
+                      {route.handledBy === "AI agent" ? (
+                        <span className="font-semibold">AI support agent · {demo.persona} continues in the same call</span>
+                      ) : (
+                        <span className="font-semibold">
+                          {route.department} · Human team{route.urgency === "urgent" ? " · urgent" : ""}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                </div>
+              )}
+
               {loggedCase && (
                 <div className="rounded-lg border border-cyan/60 bg-navy p-3 text-white">
                   <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-cyan">
-                    <ClipboardCheck className="h-3.5 w-3.5" /> Case logged by {agent.persona}
+                    <ClipboardCheck className="h-3.5 w-3.5" /> Case logged by {demo.persona}
                   </p>
                   <dl className="space-y-1 text-xs">
                     {Object.entries(loggedCase)
@@ -630,7 +723,7 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
 
               {phase === "connecting" && (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Connecting {agent.persona}…
+                  <Loader2 className="h-4 w-4 animate-spin" /> Connecting {demo.persona}…
                 </div>
               )}
 
@@ -639,8 +732,8 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
                   <div className="rounded-lg border border-red-200 bg-red-50 p-3">
                     <p className="text-sm text-red-600 break-words">{errorMsg}</p>
                   </div>
-                  <Button variant="outline" className="w-full" onClick={() => router.push("/")}>
-                    <ArrowLeft className="mr-2 h-4 w-4" /> Back to agents
+                  <Button variant="outline" className="w-full" onClick={() => router.push(`/?tab=${mode}`)}>
+                    <ArrowLeft className="mr-2 h-4 w-4" /> Back
                   </Button>
                 </div>
               )}
@@ -649,50 +742,43 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
         </div>
 
         {/* Right: transcript / processing */}
-        <div className="w-full lg:w-[68%]">
+        <div className="w-full lg:w-[66%]">
           <Card className="h-full">
             <CardHeader>
-              <CardTitle className="text-base">Live transcript</CardTitle>
-              <CardDescription>Real-time transcription of the call</CardDescription>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base">Live transcript</CardTitle>
+                  <CardDescription>Real-time transcription of the call</CardDescription>
+                </div>
+                {stageSwitched && (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan/20 px-2.5 py-1 text-xs font-semibold text-navy">
+                    <Bot className="h-3 w-3" /> Stage 2 · AI support agent
+                  </span>
+                )}
+              </div>
             </CardHeader>
             <CardContent>
               {(phase === "connecting" || phase === "in-call") && (
-                <div
-                  ref={transcriptContainerRef}
-                  className="h-[500px] space-y-3 overflow-y-auto rounded-lg bg-muted/40 p-4"
-                >
+                <div ref={transcriptContainerRef} className="h-[500px] space-y-3 overflow-y-auto rounded-lg bg-muted/40 p-4">
                   {liveTranscripts.length === 0 ? (
                     <div className="flex h-full items-center justify-center text-muted-foreground">
                       <p className="text-center text-sm">
                         {phase === "connecting"
-                          ? `Connecting to ${agent.persona}…`
-                          : `${agent.persona} will greet you — then speak as the caller.`}
+                          ? `Connecting to ${demo.persona}…`
+                          : `${demo.persona} will greet you — then speak as the caller.`}
                       </p>
                     </div>
                   ) : (
                     liveTranscripts.map((t, i) => {
                       const isAgent = t.speaker === "agent";
                       return (
-                        <div
-                          key={i}
-                          className={`rounded-lg p-3 ${
-                            isAgent ? "ml-8 bg-brand-soft" : "mr-8 bg-cyan/15"
-                          }`}
-                        >
+                        <div key={i} className={`rounded-lg p-3 ${isAgent ? "ml-8 bg-brand-soft" : "mr-8 bg-cyan/15"}`}>
                           <div className="mb-1 flex items-center gap-2">
-                            <span
-                              className={`text-xs font-semibold ${
-                                isAgent ? "text-deep-purple" : "text-navy"
-                              }`}
-                            >
-                              {isAgent ? agent.persona : "Caller"}
+                            <span className={`text-xs font-semibold ${isAgent ? "text-deep-purple" : "text-navy"}`}>
+                              {isAgent ? demo.persona : "Caller"}
                             </span>
-                            <span className="text-xs text-muted-foreground">
-                              {new Date(t.timestamp).toLocaleTimeString()}
-                            </span>
-                            {!t.isFinal && (
-                              <span className="text-xs italic text-muted-foreground">(speaking…)</span>
-                            )}
+                            <span className="text-xs text-muted-foreground">{new Date(t.timestamp).toLocaleTimeString()}</span>
+                            {!t.isFinal && <span className="text-xs italic text-muted-foreground">(speaking…)</span>}
                           </div>
                           <p className="text-sm text-foreground">{t.text}</p>
                         </div>
@@ -712,9 +798,7 @@ export default function InboundCallComponent({ agentKey }: { agentKey: AgentKey 
                 <div className="flex h-[500px] items-center justify-center">
                   <div className="space-y-2 text-center">
                     <AlertCircle className="mx-auto h-8 w-8 text-red-500" />
-                    <p className="text-sm text-muted-foreground">
-                      The call could not be completed. Go back and try again.
-                    </p>
+                    <p className="text-sm text-muted-foreground">The call could not be completed. Go back and try again.</p>
                   </div>
                 </div>
               )}

@@ -1,16 +1,20 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { Bot, Database } from "lucide-react";
-import AgentCards from "./AgentCards";
+import { Database, PhoneForwarded, Headset, Truck } from "lucide-react";
+import DemoCard from "./AgentCards";
 import CustomerDbTable from "./CustomerDbTable";
-import { AGENTS, type AgentKey } from "@/lib/agents";
+import { DEMOS, type AgentKey, type DemoMode } from "@/lib/agents";
+
+type Tab = DemoMode | "db";
+const TAB_ICONS = { ivr: PhoneForwarded, support: Headset, partner: Truck, db: Database } as const;
 
 export default function HomeClient() {
   const sp = useSearchParams();
   const router = useRouter();
 
-  const tab: "agents" | "db" = sp.get("tab") === "db" ? "db" : "agents";
+  const rawTab = sp.get("tab");
+  const tab: Tab = rawTab === "db" || rawTab === "support" || rawTab === "partner" ? rawTab : "ivr";
   const agent: AgentKey = sp.get("agent") === "partner" ? "partner" : "retail";
   const highlight = sp.get("highlight");
 
@@ -28,40 +32,42 @@ export default function HomeClient() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-navy">Voice AI demo</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Two inbound virtual agents for Johnson Health Tech Australia — simulate a call, watch the
-          live transcript, and see the result written to the customer DB.
+          Route, resolve, assist: three inbound calls for Johnson Health Tech Australia, and the customer
+          record each one writes.
         </p>
       </div>
 
       {/* Tabs */}
-      <div role="tablist" aria-label="Demo sections" className="flex gap-1 border-b border-border">
-        <TabButton active={tab === "agents"} onClick={() => go({ tab: "agents" })} icon={Bot}>
-          Virtual Agents
-        </TabButton>
-        <TabButton active={tab === "db"} onClick={() => go({ tab: "db" })} icon={Database}>
+      <div role="tablist" aria-label="Demo sections" className="flex flex-wrap gap-1 border-b border-border">
+        {DEMOS.map((d) => (
+          <TabButton key={d.mode} active={tab === d.mode} onClick={() => go({ tab: d.mode })} icon={TAB_ICONS[d.mode]}>
+            {d.label}
+          </TabButton>
+        ))}
+        <TabButton active={tab === "db"} onClick={() => go({ tab: "db" })} icon={TAB_ICONS.db}>
           Customer DB
         </TabButton>
       </div>
 
-      {tab === "agents" ? (
-        <AgentCards />
+      {tab !== "db" ? (
+        <DemoCard mode={tab} />
       ) : (
         <div className="space-y-4">
           <div className="flex flex-wrap gap-2">
-            {AGENTS.map((a) => {
-              const active = a.key === agent;
+            {(["retail", "partner"] as AgentKey[]).map((a) => {
+              const active = a === agent;
               return (
                 <button
-                  key={a.key}
+                  key={a}
                   type="button"
-                  onClick={() => go({ agent: a.key, highlight: null })}
+                  onClick={() => go({ agent: a, highlight: null })}
                   className={`rounded-full border px-3.5 py-1.5 text-sm font-medium transition-colors ${
                     active
                       ? "border-primary bg-primary text-white"
                       : "border-border bg-card text-foreground/80 hover:bg-brand-soft"
                   }`}
                 >
-                  {a.persona} · {a.key === "retail" ? "Retail support" : "Partner desk"}
+                  {a === "retail" ? "Inbound calls · Mia" : "Partner desk · Alex"}
                 </button>
               );
             })}
@@ -91,9 +97,7 @@ function TabButton({
       aria-selected={active}
       onClick={onClick}
       className={`-mb-px flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
-        active
-          ? "border-primary text-primary"
-          : "border-transparent text-muted-foreground hover:text-foreground"
+        active ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"
       }`}
     >
       <Icon className="h-4 w-4" />
