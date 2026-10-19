@@ -8,11 +8,11 @@ export default function Footer() {
           <div className="flex items-center justify-center gap-2">
             <span className="text-sm text-muted-foreground">A product of</span>
             <Image
-              src="/aistra_logo.svg"
-              alt="Aistra Logo"
-              width={80}
-              height={24}
-              className="h-6 w-auto"
+              src="/aistra_logo_small.png"
+              alt="Aistra"
+              width={180}
+              height={67}
+              className="h-7 w-auto"
             />
           </div>
         </div>
