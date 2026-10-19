@@ -76,6 +76,9 @@ interface RouteInfo {
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** SSML pause tags the agents speak through ElevenLabs; never show them to people. */
+const stripSsml = (s: string) => s.replace(/<break\b[^>]*\/?>/gi, " ").replace(/\s{2,}/g, " ").trim();
+
 const CASE_TOOL: Record<AgentKey, string> = { retail: "recordRetailCase", partner: "recordPartnerCase" };
 const CASE_FIELD_LABELS: Record<string, string> = {
   issue: "Issue",
@@ -174,7 +177,7 @@ function humanRouteLine(info: RouteInfo): string {
     info.urgency === "urgent"
       ? `Thanks, I'll get you straight to our ${info.department} team.`
       : `Thanks, that's one for our ${info.department} team.`;
-  return `${opener} I'm connecting you now, and I'll pass on what you've told me so you won't have to repeat it.`;
+  return `${opener} <break time="0.5s" /> I'm connecting you now, <break time="0.3s" /> and I'll pass on what you've told me so you won't have to repeat it.`;
 }
 
 /** Turns the live support-agent prompt into the second stage of the same call. */
@@ -280,7 +283,7 @@ export default function InboundCallComponent({ mode }: { mode: DemoMode }) {
         }
         if (i < 6) await delay(1500);
       }
-      const summary = callObj?.summary ?? "";
+      const summary = stripSsml(callObj?.summary ?? "");
       const endReason = callObj?.endReason ?? "unknown";
       const joinedMs = callObj?.joined ? new Date(callObj.joined).getTime() : 0;
       const endedMs = callObj?.ended ? new Date(callObj.ended).getTime() : 0;
@@ -293,7 +296,7 @@ export default function InboundCallComponent({ mode }: { mode: DemoMode }) {
       try {
         const r = await fetch(`/api/calls/transcripts?callId=${callId}`);
         const d = await r.json();
-        if (Array.isArray(d.transcripts)) transcriptArray = d.transcripts;
+        if (Array.isArray(d.transcripts)) transcriptArray = d.transcripts.map((t: any) => ({ ...t, text: stripSsml(String(t.text || "")) }));
       } catch {
         /* continue without transcript */
       }
@@ -546,7 +549,7 @@ export default function InboundCallComponent({ mode }: { mode: DemoMode }) {
         if (Array.isArray(session.transcripts)) {
           setLiveTranscripts(
             session.transcripts.map((t: any) => ({
-              text: t.text || "",
+              text: stripSsml(t.text || ""),
               isFinal: Boolean(t.isFinal),
               speaker: t.speaker || "user",
               timestamp: t.timestamp || Date.now(),
