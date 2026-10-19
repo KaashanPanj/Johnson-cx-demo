@@ -17,6 +17,8 @@ import { parseMode, type DemoMode } from "@/lib/agents";
 interface SupportStage {
   systemPrompt: string;
   selectedTools: unknown[];
+  /** the support agent's own voice, so the stage switch also switches voice */
+  voice: string | null;
 }
 
 const UV = "https://api.ultravox.ai/api";
@@ -36,7 +38,11 @@ async function fetchSupportStage(apiKey: string): Promise<SupportStage | null> {
     const a = await r.json();
     const ct = a?.callTemplate || {};
     if (!ct.systemPrompt) return null;
-    return { systemPrompt: String(ct.systemPrompt), selectedTools: Array.isArray(ct.selectedTools) ? ct.selectedTools : [] };
+    return {
+      systemPrompt: String(ct.systemPrompt),
+      selectedTools: Array.isArray(ct.selectedTools) ? ct.selectedTools : [],
+      voice: typeof ct.voice === "string" && ct.voice ? ct.voice : null,
+    };
   } catch {
     return null;
   }

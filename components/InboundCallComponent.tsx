@@ -61,6 +61,7 @@ interface CallObject {
 interface SupportStage {
   systemPrompt: string;
   selectedTools: unknown[];
+  voice?: string | null;
 }
 
 /** What the IVR decided when it called routeCall. */
@@ -501,6 +502,8 @@ export default function InboundCallComponent({ mode }: { mode: DemoMode }) {
             const body = {
               systemPrompt: buildSupportPrompt(stage.systemPrompt, info),
               selectedTools: stage.selectedTools,
+              // the support agent keeps its own voice (set in the Ultravox console), even mid-call
+              ...(stage.voice ? { voice: stage.voice } : {}),
               toolResultText:
                 `(New stage) You are now Mia, the AI support assistant, continuing the same call. ` +
                 `The caller is calling about: ${info.intent}. ${info.callerSummary} ` +
