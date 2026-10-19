@@ -177,7 +177,7 @@ function humanRouteLine(info: RouteInfo): string {
     info.urgency === "urgent"
       ? `Thanks, I'll get you straight to our ${info.department} team.`
       : `Thanks, that's one for our ${info.department} team.`;
-  return `${opener} <break time="0.5s" /> I'm connecting you now, <break time="0.3s" /> and I'll pass on what you've told me so you won't have to repeat it.`;
+  return `${opener} I'm connecting you now, and I'll pass on what you've told me so you won't have to repeat it.`;
 }
 
 /** Turns the live support-agent prompt into the second stage of the same call. */
