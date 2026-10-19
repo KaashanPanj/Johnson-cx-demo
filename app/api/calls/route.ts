@@ -5,20 +5,36 @@ import { parseMode, type DemoMode } from "@/lib/agents";
 /**
  * POST /api/calls — starts an inbound-style in-browser call for one of the three demo modes.
  *
- *   ivr      → the AI-enabled IVR agent (routing only)
- *   support  → the same IVR agent; the response also carries the AI support agent's live
- *              prompt + tools ("supportStage") so the browser can switch the call into a
- *              new stage when the IVR routes a simple query to the AI agent
- *   partner  → Alex, the B2B partner desk
+ *   ivr      → an agent call on the AI-enabled IVR agent (routing only), with that agent's voice
+ *   support  → a DIRECT call built from the IVR agent's live settings but with the SUPPORT
+ *              agent's voice from the first word, so tab 2 sounds like the support agent
+ *              throughout. The response also carries the support agent's live prompt + tools
+ *              ("supportStage") so the browser can switch the call into the support stage
+ *              when the IVR routes a simple query to the AI agent.
+ *   partner  → an agent call on Alex, the B2B partner desk
  *
  * Body: { mode: "ivr" | "support" | "partner", metadata?: Record<string,string> }
- * (legacy: { agent: <ultravox agent id> } is still accepted)
  */
 interface SupportStage {
   systemPrompt: string;
   selectedTools: unknown[];
-  /** the support agent's own voice, so the stage switch also switches voice */
+  /** the support agent's own voice, so the stage switch also carries the voice */
   voice: string | null;
+}
+
+interface CallTemplate {
+  systemPrompt?: string;
+  model?: string;
+  voice?: string;
+  languageHint?: string;
+  temperature?: number;
+  firstSpeakerSettings?: unknown;
+  selectedTools?: unknown[];
+  vadSettings?: unknown;
+  inactivityMessages?: unknown[];
+  maxDuration?: string;
+  joinTimeout?: string;
+  timeExceededMessage?: string;
 }
 
 const UV = "https://api.ultravox.ai/api";
@@ -29,23 +45,50 @@ function agentIdFor(mode: DemoMode): string {
   return env.NEXT_PUBLIC_ULTRAVOX_AGENT_IVR || "";
 }
 
-async function fetchSupportStage(apiKey: string): Promise<SupportStage | null> {
-  const id = process.env.NEXT_PUBLIC_ULTRAVOX_AGENT_RETAIL || "";
-  if (!id) return null;
+async function fetchTemplate(apiKey: string, agentId: string): Promise<CallTemplate | null> {
+  if (!agentId) return null;
   try {
-    const r = await fetch(`${UV}/agents/${id}`, { headers: { "X-API-Key": apiKey }, cache: "no-store" });
+    const r = await fetch(`${UV}/agents/${agentId}`, { headers: { "X-API-Key": apiKey }, cache: "no-store" });
     if (!r.ok) return null;
     const a = await r.json();
-    const ct = a?.callTemplate || {};
-    if (!ct.systemPrompt) return null;
-    return {
-      systemPrompt: String(ct.systemPrompt),
-      selectedTools: Array.isArray(ct.selectedTools) ? ct.selectedTools : [],
-      voice: typeof ct.voice === "string" && ct.voice ? ct.voice : null,
-    };
+    return (a?.callTemplate as CallTemplate) || null;
   } catch {
     return null;
   }
+}
+
+function toSupportStage(ct: CallTemplate | null): SupportStage | null {
+  if (!ct?.systemPrompt) return null;
+  return {
+    systemPrompt: String(ct.systemPrompt),
+    selectedTools: Array.isArray(ct.selectedTools) ? ct.selectedTools : [],
+    voice: typeof ct.voice === "string" && ct.voice ? ct.voice : null,
+  };
+}
+
+/** The agent-call template fields that a direct call accepts, copied verbatim. */
+function directCallBody(ivr: CallTemplate, voice: string | null) {
+  const body: Record<string, unknown> = {};
+  const copy: (keyof CallTemplate)[] = [
+    "systemPrompt",
+    "model",
+    "languageHint",
+    "temperature",
+    "firstSpeakerSettings",
+    "selectedTools",
+    "vadSettings",
+    "inactivityMessages",
+    "maxDuration",
+    "joinTimeout",
+    "timeExceededMessage",
+  ];
+  for (const k of copy) {
+    const v = ivr[k];
+    if (v !== undefined && v !== null && v !== "" && !(Array.isArray(v) && v.length === 0)) body[k] = v;
+  }
+  if (voice) body.voice = voice;
+  else if (ivr.voice) body.voice = ivr.voice;
+  return body;
 }
 
 export async function POST(request: Request) {
@@ -81,15 +124,43 @@ export async function POST(request: Request) {
     if (!k.startsWith("ultravox.")) metadata[k] = String(v);
   }
 
+  const headers = { "Content-Type": "application/json", "X-API-Key": ULTRAVOX_API_KEY };
+
   try {
-    const [response, supportStage] = await Promise.all([
-      fetch(`${UV}/agents/${agentId}/calls`, {
+    let supportStage: SupportStage | null = null;
+    let response: Response | null = null;
+    let path = "agent";
+
+    if (mode === "support") {
+      const [ivr, support] = await Promise.all([
+        fetchTemplate(ULTRAVOX_API_KEY, agentId),
+        fetchTemplate(ULTRAVOX_API_KEY, process.env.NEXT_PUBLIC_ULTRAVOX_AGENT_RETAIL || ""),
+      ]);
+      supportStage = toSupportStage(support);
+      if (ivr?.systemPrompt) {
+        // Direct call: the IVR agent's live settings, voiced by the support agent from the start.
+        const direct = directCallBody(ivr, supportStage?.voice ?? null);
+        response = await fetch(`${UV}/calls`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ ...direct, recordingEnabled: true, metadata: { ...metadata, voiceSource: "support-agent" } }),
+        });
+        path = "direct";
+        if (!response.ok) {
+          console.error("Direct call failed, falling back to the agent call:", response.status, await response.text());
+          response = null;
+        }
+      }
+    }
+
+    if (!response) {
+      response = await fetch(`${UV}/agents/${agentId}/calls`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": ULTRAVOX_API_KEY },
+        headers,
         body: JSON.stringify({ recordingEnabled: true, templateContext, metadata }),
-      }),
-      mode === "support" ? fetchSupportStage(ULTRAVOX_API_KEY) : Promise.resolve(null),
-    ]);
+      });
+      path = "agent";
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -101,7 +172,7 @@ export async function POST(request: Request) {
     }
 
     const data = await response.json();
-    return NextResponse.json({ ...data, mode, supportStage });
+    return NextResponse.json({ ...data, mode, path, supportStage });
   } catch (error) {
     console.error("Error in /api/calls:", error);
     return NextResponse.json({ error: "Error calling Ultravox API", details: String(error) }, { status: 500 });
